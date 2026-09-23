@@ -1,4 +1,4 @@
-"""The accelerator this process uses: cuda, then mps, then cpu."""
+"""The accelerator this process uses: cuda, then xpu, then mps, then cpu."""
 import math
 import os
 import subprocess
@@ -14,11 +14,11 @@ if __name__ == "__main__" and os.name == "posix":
 
 import torch
 
-DEVICES = ("cpu", "cuda", "mps")
+DEVICES = ("cpu", "cuda", "xpu", "mps")
 # The child prints one line with this prefix. ROCm and other wheels write startup text to stdout around it;
 # a bare "cuda" line in that text is not a result.
 PROBE_PREFIX = "kev-device "
-DEVICE_HELP = ("auto probes in a child process and falls back to cpu (CUDA/ROCm first, then MPS; "
+DEVICE_HELP = ("auto probes in a child process and falls back to cpu (CUDA/ROCm first, then Intel XPU, then MPS; "
                "each probe waits KEV_DEVICE_PROBE_TIMEOUT seconds, default 30); "
                "an explicit accelerator fails closed; cpu skips discovery")
 
@@ -86,7 +86,9 @@ def _run_probe(device, dtype, timeout):
 def _probe(device, dtype):
     """Child-process entry point: no accelerator operations from here may run in the selecting process."""
     if device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+        device = ("cuda" if torch.cuda.is_available() else
+                  "xpu" if getattr(torch, "xpu", None) and torch.xpu.is_available() else
+                  "mps" if torch.backends.mps.is_available() else "cpu")
     if device != "cpu":
         with torch.no_grad():
             matrix = torch.ones(8, 8, device=device, dtype=dtype)
@@ -99,11 +101,13 @@ def sync(device):
     """Wait for queued kernels, so wall-clock timings around a forward pass are real."""
     if device == "mps": torch.mps.synchronize()
     elif device == "cuda": torch.cuda.synchronize()
+    elif device == "xpu": torch.xpu.synchronize()
 
 
 def empty_cache(device):
     if device == "mps": torch.mps.empty_cache()
     elif device == "cuda": torch.cuda.empty_cache()
+    elif device == "xpu": torch.xpu.empty_cache()
 
 
 def out_of_memory(e):
@@ -113,9 +117,10 @@ def out_of_memory(e):
 
 
 def allocated_bytes(device):
-    """Bytes currently allocated on the device (MPS) or the peak since the process started (CUDA); 0 on CPU."""
+    """Bytes currently allocated on the device (MPS) or the peak since the process started (CUDA/XPU); 0 on CPU."""
     if device == "mps": return torch.mps.current_allocated_memory()
     if device == "cuda": return torch.cuda.max_memory_allocated()
+    if device == "xpu": return torch.xpu.memory_allocated()
     return 0
 
 

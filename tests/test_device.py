@@ -83,6 +83,9 @@ def test_probe_allocates_multiplies_and_synchronizes(monkeypatch, cuda, mps, res
         calls.append((shape, kwargs))
         return Matrix()
     monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    if hasattr(torch, "xpu"):
+        # An XPU host would win over MPS; this test covers the CUDA/MPS chain.
+        monkeypatch.setattr(torch.xpu, "is_available", lambda: False)
     monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
     monkeypatch.setattr(torch, "ones", ones)
     monkeypatch.setattr(device, "sync", lambda dev: calls.append(("sync", dev)))

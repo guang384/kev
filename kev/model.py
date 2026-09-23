@@ -249,8 +249,9 @@ class DecisionModel(nn.Module):
         default: it changes where the rotary buffers are computed, so every other path keeps its bits."""
         super().__init__()
         # backbone only (no vocab head): we never generate text.
-        # eager on MPS/CPU (known-good with our float 4D mask); SDPA on CUDA (accepts arbitrary additive masks).
-        attn = attn or ("sdpa" if str(device).startswith("cuda") else "eager")
+        # eager on MPS/CPU (known-good with our float 4D mask); SDPA on CUDA/XPU (accepts arbitrary additive masks;
+        # on XPU, eager is ~2x slower than SDPA on the same request, verified on Arc 130T, torch 2.8.0+xpu).
+        attn = attn or ("sdpa" if str(device).startswith(("cuda", "xpu")) else "eager")
         # dtype: fp32 for training and exact evaluation; bf16 is a serving option for large backbones (8B on a 32 GB Mac)
         load = {"dtype": dtype, "attn_implementation": attn}
         if direct_load: load["device_map"] = {"": torch.cuda.current_device() if device == "cuda" else device}   # "cuda": under torchrun, this rank's GPU

@@ -177,7 +177,7 @@ def main():
     ap.add_argument("--suite", help="frozen suite directory (scores its development partition)")
     ap.add_argument("--data", help="your own labelled requests, one JSON object per line (kev.data.load_records); an alternative to --suite")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--device", choices=["cpu", "mps", "cuda"], default=default_device())
+    ap.add_argument("--device", choices=["cpu", "mps", "cuda", "xpu"], default=default_device())
     ap.add_argument("--allow-test", action="store_true")
     ap.add_argument("--split", choices=["development", "calibration", "train"], default="development",
                     help="suite partition to score (train: teacher predictions for distillation; --allow-test reads the locked test instead)")

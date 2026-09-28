@@ -261,11 +261,11 @@ class Checkpoint:
 
     def _load_torch(self, tok, device, opts):
         m, merged = self._full_torch(tok, device, opts) if self.full else self._adapted_torch(tok, device, opts)
-        serving = str(device).startswith("cuda") and m.hybrid
+        serving = str(device) in ("cuda", "xpu") and m.hybrid   # fused kernels go wherever fla's Triton ops run: cuda natively, xpu via kev.xpu_triton_env
         if opts.fused and serving and merged:   # fused projections need plain (merged or full) weights
             from .fused_qwen35 import fuse
             fuse(m.lm)
-        if opts.cuda_graphs and serving:
+        if opts.cuda_graphs and serving and str(device).startswith("cuda"):   # graph replay is CUDA-only (torch.xpu has no capture API)
             from .cuda_graphs import CudaGraphs
             m.graphs = CudaGraphs(m.lm, m.pad_id)
         return m

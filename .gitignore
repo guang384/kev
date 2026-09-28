@@ -657,3 +657,6 @@ runs/r18-9b/*-trial-*/transfer/*
 !runs/r11-docs/*-trial-*/provenance.json
 !runs/r16-9b/*-trial-*/provenance.json
 !runs/r18-9b/*-trial-*/provenance.json
+
+# local scratch: benchmarks, debug scripts, background job registries and logs (Windows XPU work)
+.temp/

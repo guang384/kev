@@ -11,7 +11,10 @@ Two execution modes share one code path:
 """
 import argparse
 import copy
-import fcntl
+try:
+    import fcntl
+except ImportError:   # Windows has no fcntl; the lock guards local orchestration only
+    fcntl = None
 import gc
 import json
 import os
@@ -152,7 +155,7 @@ def study_lock():
     (ROOT / "runs").mkdir(exist_ok=True)
     with (ROOT / "runs/.research.lock").open("a") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if fcntl is not None: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError("another research runner owns the GPU queue") from None
         yield

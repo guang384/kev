@@ -10,9 +10,27 @@ date preprocessing (api.with_date_facts). A state over kev.model.SERVE_MAX_STATE
 KEV_TRUNCATE_STATES=1 reads its first SERVE_MAX_STATE tokens instead, and then every response says whether it did. Backend
 and precision follow LoadOptions (KEV_BACKEND, KEV_DTYPE, ...): on Apple Silicon the hybrid Qwen3.5 checkpoints run on MLX
 by default, elsewhere on torch in bf16.
+
+Windows XPU serving runs the hybrid by default: kev's fused layers (kev.fused_qwen35 — one projection
+GEMM, fla's Triton elementwise kernels) with the DeltaNet chunk on torch GEMMs (kev.fused_qwen35.
+_chunk_gated_delta_rule_xpu) — on Arc iGPUs that beats the pure torch reference 1.5-2.6x end to end and fla's
+all-Triton chunk 1.0-5x (measured 2026-09-29, Arc 130T, kev-0.8B: .temp/bench-{hybrid,fallback,fused}.json).
+KEV_TORCH_DELTA=1 blocks fla instead and serves transformers' pure reference layers; KEV_TORCH_CHUNK=0 puts the
+chunk back on fla's Triton op. Triton itself needs kev.xpu_triton_env's setup (sycl8 preload + toolchain).
 """
 import argparse, asyncio, atexit, hmac, os, queue, random, sys, threading, time, traceback, uuid
 from concurrent.futures import Future
+# The standalone server on Windows can block fla before transformers loads (KEV_TORCH_DELTA=1), so hub_kernels serves
+# its torch reference implementations for the DeltaNet ops — the pure-reference serve, the simplest fallback. The
+# default is the hybrid instead: fused layers + the torch-chunk op in kev.fused_qwen35, which needs fla's Triton
+# elementwise kernels and so does NOT block (see _chunk_gated_delta_rule_xpu for the measurements).
+# Library imports and tests are never affected; only `python -m kev.serve` runs this as __main__.
+TORCH_DELTA = __name__ == "__main__" and os.environ.get("KEV_TORCH_DELTA", "0") == "1"
+if TORCH_DELTA:
+    sys.modules["fla"] = None
+elif __name__ == "__main__" and sys.platform == "win32" and os.environ.get("KEV_XPU_TRITON", "1") != "0":
+    try: from . import xpu_triton_env  # noqa: F401 — preload sycl8.dll + patch Triton before torch triggers it
+    except Exception: pass
 import torch
 from dataclasses import dataclass, field, replace
 from fastapi import FastAPI, HTTPException
@@ -326,14 +344,14 @@ def main():
     if dev == "mps" and opts.attn is None: opts = replace(opts, attn="sdpa")   # serving default on Apple GPUs (parity measured)
     if dev != "cpu" and opts.dtype is None: opts = replace(opts, dtype=torch.bfloat16)   # serving default: 2-4.5x faster than fp32 on an L4, same answers (LoadOptions.dtype); KEV_DTYPE=fp32 for the exact path
     if dev == "cuda" and opts.cuda_graphs is None: opts = replace(opts, cuda_graphs=True)   # serving default: a pass is ~2,000 kernel launches, so replaying graphs cuts warm latency several-fold (kev.cuda_graphs); KEV_CUDA_GRAPHS=0 to decline
-    fused_default = dev == "cuda" and opts.fused is None
+    fused_default = dev in ("cuda", "xpu") and opts.fused is None and not TORCH_DELTA   # the torch-delta serve blocks fla: nothing to fuse with
     if fused_default: opts = replace(opts, fused=fused_available())   # serving default: fused Qwen3.5 kernels, ~1/3 less GPU time per batch (kev.fused_qwen35), when fla is installed; KEV_FUSED=0 to decline, KEV_FUSED=1 to insist
     if opts.backend is None: opts = replace(opts, backend="auto")   # serving default: MLX for the hybrid Qwen3.5 checkpoints on Apple Silicon (LoadOptions.backend); KEV_BACKEND=torch to decline
     ck = Checkpoint(run)
     tok, model = ck.load(dev, opts)
     if fused_default and not opts.fused and model.hybrid: print("fused Qwen3.5 kernels off: install the flash-linear-attention version kev/fused_qwen35.py pins (FLA_VERSION) to turn them on")
     app.state.server = Server(ck, tok, model, dev)
-    print(f"serving {ck.requested} ({ck.path}) on {dev} via {model.backend} ({model.dtype}) {a.host}:{a.port}; states over {SERVE_MAX_STATE:,} tokens "
+    print(f"serving {ck.requested} ({ck.path}) on {dev} via {model.backend} ({model.dtype}){' [torch-delta]' if TORCH_DELTA else ''} {a.host}:{a.port}; states over {SERVE_MAX_STATE:,} tokens "
           f"{'truncated (KEV_TRUNCATE_STATES=1)' if app.state.server.truncate_states else 'refused (422)'}")   # /v1/models reports the run as given, not the resolved cache path
     import uvicorn
     uvicorn.run(app, host=a.host, port=a.port)

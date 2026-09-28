@@ -18,6 +18,7 @@ where the reference rounds to bf16 in between), so fused and reference answers a
 Only for serving: there is no backward, the fused projections replace the originals (the merged LoRA is inside), and a
 pass that continues a cached DeltaNet state does not advance it (see deltanet_forward).
 """
+import os
 import types
 
 import torch
@@ -52,11 +53,100 @@ def _fix_nb():
 
 FLA_VERSION = "0.5.2"   # the flash-linear-attention these kernels and _fix_nb were written and measured against
 
+# XPU serving: Triton 3.4's Intel backend lowers tl.dot to scalar FMA on Xe-LPG+ (no matrix-engine path — verified in the
+# emitted LLVM IR), so fla's all-Triton chunk loses to oneDNN GEMMs 30-340x at the dot itself. The chunk below runs the
+# same algorithm on torch ops instead: big GEMMs in bf16 (XMX), and the two torch.linalg.solve_triangular calls (78% of
+# the reference's runtime; XPU falls back to CPU for them) as an exact fp32 blocked forward substitution — never the
+# explicit 64x64 inverse, which is catastrophically ill-conditioned on coherent keys (see the op's docstring).
+# KEV_TORCH_CHUNK=0 serves the linear-attention chunk through fla's Triton op instead (the CUDA path).
+_XPU_TORCH_CHUNK = os.environ.get("KEV_TORCH_CHUNK", "1") == "1"
+
 
 def _concat(*linears):
     """One weight [sum(out), in] for several bias-free projections of the same input."""
     if any(l.bias is not None for l in linears): raise ValueError("fused projections assume bias-free Linear layers")
     return torch.cat([l.weight for l in linears], 0).contiguous()
+
+
+def _chunk_gated_delta_rule_xpu(query, key, value, g, beta, chunk_size=64, initial_state=None, output_final_state=False):
+    """The gated delta rule by chunking (transformers' torch_chunk_gated_delta_rule, Apache-2.0, models/qwen3_5/
+    modeling_qwen3_5.py) adapted for XPU serving: query/key/value [B, T, H, D] in bf16, g [B, T, H] the log-space
+    decay (<= 0), beta [B, T, H] in (0, 1). Returns (core_attn_out [B, T, H, Dv] in the input dtype, the new recurrent
+    state [B, H, Dk, Dv] in fp32 or None). Differences against the reference: the projections and the intra-chunk
+    GEMMs stay bf16 (oneDNN keeps fp32 accumulation) while the UT solve, the recurrent-state read/write and the
+    state itself stay fp32 — one fp32 [2C, Dk] GEMM per chunk reads S for both the output and the delta correction
+    (a merged fp32 read measures faster than a bf16 + fp32 pair, and the fused 2C GEMM is what the accuracy needs) —
+    torch.linalg.solve_triangular has no XPU path (it falls back to CPU, 78% of the reference's runtime), and the
+    system it solves cannot be inverted explicitly: on coherent keys (repeated text at deep layers of kev-0.8b,
+    |L| up to 0.9996 with row sums ~60 — measured) the explicit 64x64 inverse is catastrophically ill-conditioned
+    (Newton-Schulz gave x ~ 1e13 in bf16 and still ~1e9 in fp32, against the reference's 6.2), so the solve runs
+    as fp32 blocked forward substitution: each 16x16 diagonal block is inverted exactly by Newton-Schulz (entries
+    bounded ~1e4 however bad L is), and the blocks are substituted sequentially — forward substitution like the
+    reference's, never forming the big inverse."""
+    out_dtype = query.dtype
+    B, T, _, Dk = key.shape
+    Hv, Dv = value.shape[-2:]
+    q, k, v = (x.transpose(1, 2) for x in (query, key, value))          # [B, H, T, D]
+    decay, beta = g.transpose(1, 2).float(), beta.transpose(1, 2).float()
+    qf, kf = q.float(), k.float()                                        # l2-norm in fp32, matching fla's in-kernel norm
+    q = (qf * torch.rsqrt(qf.pow(2).sum(-1, keepdim=True) + 1e-6) * (Dk ** -0.5)).to(out_dtype)
+    k = (kf * torch.rsqrt(kf.pow(2).sum(-1, keepdim=True) + 1e-6)).to(out_dtype)
+    pad = (chunk_size - T % chunk_size) % chunk_size
+    if pad:
+        q, k, v = (F.pad(x, (0, 0, 0, pad)) for x in (q, k, v))
+        decay, beta = (F.pad(x, (0, pad)) for x in (decay, beta))
+    NC = (T + pad) // chunk_size
+    q, k, v = (x.reshape(B, x.shape[1], NC, chunk_size, x.shape[-1]) for x in (q, k, v))
+    decay, beta = (x.reshape(B, x.shape[1], NC, chunk_size) for x in (decay, beta))
+    v_beta = v * beta.unsqueeze(-1).to(out_dtype)                       # [B, H, NC, C, Dv], bf16 like the big GEMMs
+    k_beta = k * beta.unsqueeze(-1).to(out_dtype)
+    cum_decay = decay.cumsum(-1)                                         # fp32, still in log space
+    pairwise = (cum_decay.unsqueeze(-1) - cum_decay.unsqueeze(-2)).masked_fill(
+        torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=q.device).triu(1), float("-inf")).exp()
+    ut = (k_beta @ k.transpose(-1, -2)).float() * pairwise              # bf16 GEMM, fp32 decay math
+    intra = (q @ k.transpose(-1, -2)).float() * pairwise
+    # Exact fp32 solve of the unitriangular system (I + tril(ut, -1)) x = rhs for both right-hand sides at
+    # once (v_beta, and the decayed k_beta that reads the old state), by blocked forward substitution.
+    rhs = torch.cat([v_beta.float(), (k_beta * cum_decay.exp().unsqueeze(-1).to(out_dtype)).float()], -1)
+    sub = 16 if chunk_size % 16 == 0 else chunk_size                    # the block the small NS inverts exactly
+    NB = chunk_size // sub
+    if NB == 1:
+        Lb = ut.tril(-1).reshape(-1, chunk_size, chunk_size)
+        X = torch.eye(chunk_size, dtype=torch.float32, device=Lb.device).expand(Lb.shape).contiguous() - Lb
+        for _ in range(max(0, (chunk_size - 1).bit_length() - 1)):
+            X = 2.0 * X - X @ (X + Lb @ X)
+        sol = (X @ rhs.reshape(-1, chunk_size, rhs.shape[-1])).reshape(rhs.shape)
+    else:
+        blocks = ut.reshape(B, Hv, NC, NB, sub, NB, sub)                 # [.., i, :, j, :] is block (i, j)
+        Ld = torch.stack([blocks[:, :, :, i, :, i, :] for i in range(NB)], 3).tril(-1).reshape(-1, sub, sub)
+        Xd = torch.eye(sub, dtype=torch.float32, device=Ld.device).expand(Ld.shape).contiguous() - Ld
+        for _ in range(max(0, (sub - 1).bit_length() - 1)):              # exact: the error is L^(2^(k+1))
+            Xd = 2.0 * Xd - Xd @ (Xd + Ld @ Xd)
+        Xd = Xd.reshape(B, Hv, NC, NB, sub, sub)
+        r, x = rhs.reshape(B, Hv, NC, NB, sub, -1), torch.empty_like(rhs).reshape(B, Hv, NC, NB, sub, -1)
+        for i in range(NB):                                              # x_i = Xd_i (r_i - sum_j L_ij x_j)
+            acc = r[:, :, :, i]
+            for j in range(i):
+                acc = acc - blocks[:, :, :, i, :, j, :] @ x[:, :, :, j]
+            x[:, :, :, i] = Xd[:, :, :, i] @ acc
+        sol = x.reshape(rhs.shape)
+    new_values = sol[..., :Dv]                                           # fp32: the delta correction's target
+    k_cumdecay = sol[..., Dv:]                                          # fp32: the old-state read of the write side
+    S = torch.zeros(B, Hv, Dk, Dv, dtype=torch.float32, device=q.device) if initial_state is None \
+        else initial_state.to(torch.float32)
+    out = torch.empty(B, Hv, NC, chunk_size, Dv, dtype=out_dtype, device=q.device)
+    qd = q.float() * cum_decay.exp().unsqueeze(-1)                       # fp32 decayed queries (the read side)
+    kdd = k.float() * (cum_decay[..., -1:] - cum_decay).exp().unsqueeze(-1)   # fp32 decayed keys: write the new one
+    intra_b = intra.to(out_dtype)
+    chunk_decay = cum_decay[..., -1].exp()
+    qk = torch.cat([qd, k_cumdecay], -2)                                 # fp32: one GEMM reads S for both sides
+    for i in range(NC):
+        reads = qk[:, :, i] @ S                                          # [B, Hv, 2C, Dv] fp32
+        v_new = new_values[:, :, i] - reads[:, :, chunk_size:]           # fp32: the delta correction
+        out[:, :, i] = reads[:, :, :chunk_size] + intra_b[:, :, i] @ v_new.to(out_dtype)
+        S = S * chunk_decay[:, :, i, None, None] + kdd[:, :, i].transpose(-1, -2) @ v_new
+    core = out.reshape(B, Hv, NC * chunk_size, Dv)[:, :, :T].transpose(1, 2).to(out_dtype, memory_format=torch.contiguous_format)
+    return core, (S if output_final_state else None)
 
 
 def deltanet_forward(self, hidden_states, cache_params=None, attention_mask=None, **kwargs):
@@ -72,10 +162,20 @@ def deltanet_forward(self, hidden_states, cache_params=None, attention_mask=None
     mixed, conv_state = causal_conv1d(mixed, self.conv_weight, None, initial_state=layer.conv_states[0] if previous else None,
                                       output_final_state=fill, activation="silu")
     q, k, v = mixed.split([self.key_dim, self.key_dim, self.value_dim], -1)
-    out, recurrent = chunk_gated_delta_rule(
-        q.reshape(B, T, -1, self.head_k_dim), k.reshape(B, T, -1, self.head_k_dim), v.reshape(B, T, -1, self.head_v_dim),
-        g=a, beta=b, initial_state=layer.recurrent_states[0] if previous else None, output_final_state=fill,
-        use_qk_l2norm_in_kernel=True, use_gate_in_kernel=True, A_log=self.A_log, dt_bias=self.dt_bias, use_beta_sigmoid_in_kernel=True)
+    if _XPU_TORCH_CHUNK and q.device.type == "xpu":
+        # Arc iGPU: the chunk runs on oneDNN GEMMs (see _chunk_gated_delta_rule_xpu), not fla's all-Triton op
+        q, k = (x.reshape(B, T, -1, self.head_k_dim) for x in (q, k))
+        v = v.reshape(B, T, -1, self.head_v_dim)
+        rep = self.num_v_heads // self.num_k_heads
+        if rep > 1: q, k = (x.repeat_interleave(rep, dim=2) for x in (q, k))
+        out, recurrent = _chunk_gated_delta_rule_xpu(q, k, v, -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias),
+                                                      b.sigmoid(), initial_state=layer.recurrent_states[0] if previous else None,
+                                                      output_final_state=fill)
+    else:
+        out, recurrent = chunk_gated_delta_rule(
+            q.reshape(B, T, -1, self.head_k_dim), k.reshape(B, T, -1, self.head_k_dim), v.reshape(B, T, -1, self.head_v_dim),
+            g=a, beta=b, initial_state=layer.recurrent_states[0] if previous else None, output_final_state=fill,
+            use_qk_l2norm_in_kernel=True, use_gate_in_kernel=True, A_log=self.A_log, dt_bias=self.dt_bias, use_beta_sigmoid_in_kernel=True)
     if fill:
         if not layer.is_conv_states_initialized[0]: layer.lazy_initialization(conv_states=conv_state, conv_kernel_size=conv_state.shape[-1])
         layer.conv_states[0].copy_(conv_state)   # in place: graph buffers keep their address

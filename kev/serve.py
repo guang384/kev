@@ -18,13 +18,11 @@ all-Triton chunk 1.0-5x (measured 2026-09-29, Arc 130T, kev-0.8B: .temp/bench-{h
 KEV_TORCH_DELTA=1 blocks fla instead and serves transformers' pure reference layers; KEV_TORCH_CHUNK=0 puts the
 chunk back on fla's Triton op. Triton itself needs kev.xpu_triton_env's setup (sycl8 preload + toolchain).
 """
+
 import argparse, asyncio, atexit, hmac, os, queue, random, sys, threading, time, traceback, uuid
 from concurrent.futures import Future
-# The standalone server on Windows can block fla before transformers loads (KEV_TORCH_DELTA=1), so hub_kernels serves
-# its torch reference implementations for the DeltaNet ops — the pure-reference serve, the simplest fallback. The
-# default is the hybrid instead: fused layers + the torch-chunk op in kev.fused_qwen35, which needs fla's Triton
-# elementwise kernels and so does NOT block (see _chunk_gated_delta_rule_xpu for the measurements).
-# Library imports and tests are never affected; only `python -m kev.serve` runs this as __main__.
+# fla may be blocked before transformers loads, so hub_kernels serves its torch references — the pure-reference
+# serve. Only `python -m kev.serve` runs this (library imports and tests are never affected).
 TORCH_DELTA = __name__ == "__main__" and os.environ.get("KEV_TORCH_DELTA", "0") == "1"
 if TORCH_DELTA:
     sys.modules["fla"] = None

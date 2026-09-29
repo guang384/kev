@@ -11,12 +11,11 @@ KEV_TRUNCATE_STATES=1 reads its first SERVE_MAX_STATE tokens instead, and then e
 and precision follow LoadOptions (KEV_BACKEND, KEV_DTYPE, ...): on Apple Silicon the hybrid Qwen3.5 checkpoints run on MLX
 by default, elsewhere on torch in bf16.
 
-Windows XPU serving runs the hybrid by default: kev's fused layers (kev.fused_qwen35 — one projection
-GEMM, fla's Triton elementwise kernels) with the DeltaNet chunk on torch GEMMs (kev.fused_qwen35.
-_chunk_gated_delta_rule_xpu) — on Arc iGPUs that beats the pure torch reference 1.5-2.6x end to end and fla's
-all-Triton chunk 1.0-5x (measured 2026-09-29, Arc 130T, kev-0.8B: .temp/bench-{hybrid,fallback,fused}.json).
-KEV_TORCH_DELTA=1 blocks fla instead and serves transformers' pure reference layers; KEV_TORCH_CHUNK=0 puts the
-chunk back on fla's Triton op. Triton itself needs kev.xpu_triton_env's setup (sycl8 preload + toolchain).
+Windows XPU serving runs the hybrid by default: kev's fused layers with the DeltaNet chunk on torch GEMMs
+(kev.fused_qwen35._chunk_gated_delta_rule_xpu — on Arc iGPUs 1.5-2.6x faster than the pure torch reference; fla's
+all-Triton chunk is unusable there: tl.dot gets no DPAS and the autotune busts the driver's per-thread scratch cap).
+KEV_TORCH_DELTA=1 blocks fla and serves the pure reference instead, and Triton itself needs kev.xpu_triton_env's setup
+(sycl8 preload + toolchain probe).
 """
 
 import argparse, asyncio, atexit, hmac, os, queue, random, sys, threading, time, traceback, uuid

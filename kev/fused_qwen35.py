@@ -18,7 +18,6 @@ where the reference rounds to bf16 in between), so fused and reference answers a
 Only for serving: there is no backward, the fused projections replace the originals (the merged LoRA is inside), and a
 pass that continues a cached DeltaNet state does not advance it (see deltanet_forward).
 """
-import os
 import types
 
 import torch
@@ -55,8 +54,6 @@ FLA_VERSION = "0.5.2"   # the flash-linear-attention these kernels and _fix_nb w
 
 # XPU serving: Triton 3.4's Intel backend lowers tl.dot to scalar FMA on Xe-LPG+ (no DPAS in the emitted IR), so fla's
 # all-Triton chunk is 30-340x slower than oneDNN GEMMs at the dot; the chunk below runs the same algorithm on torch ops.
-# KEV_TORCH_CHUNK=0 keeps the chunk on fla's Triton op (the CUDA path).
-_XPU_TORCH_CHUNK = os.environ.get("KEV_TORCH_CHUNK", "1") == "1"
 
 
 def _concat(*linears):
@@ -155,7 +152,7 @@ def deltanet_forward(self, hidden_states, cache_params=None, attention_mask=None
     mixed, conv_state = causal_conv1d(mixed, self.conv_weight, None, initial_state=layer.conv_states[0] if previous else None,
                                       output_final_state=fill, activation="silu")
     q, k, v = mixed.split([self.key_dim, self.key_dim, self.value_dim], -1)
-    if _XPU_TORCH_CHUNK and q.device.type == "xpu":
+    if q.device.type == "xpu":
         # Arc iGPU: the chunk runs on oneDNN GEMMs (see _chunk_gated_delta_rule_xpu), not fla's all-Triton op
         q, k = (x.reshape(B, T, -1, self.head_k_dim) for x in (q, k))
         v = v.reshape(B, T, -1, self.head_v_dim)

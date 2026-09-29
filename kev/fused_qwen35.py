@@ -53,12 +53,9 @@ def _fix_nb():
 
 FLA_VERSION = "0.5.2"   # the flash-linear-attention these kernels and _fix_nb were written and measured against
 
-# XPU serving: Triton 3.4's Intel backend lowers tl.dot to scalar FMA on Xe-LPG+ (no matrix-engine path — verified in the
-# emitted LLVM IR), so fla's all-Triton chunk loses to oneDNN GEMMs 30-340x at the dot itself. The chunk below runs the
-# same algorithm on torch ops instead: big GEMMs in bf16 (XMX), and the two torch.linalg.solve_triangular calls (78% of
-# the reference's runtime; XPU falls back to CPU for them) as an exact fp32 blocked forward substitution — never the
-# explicit 64x64 inverse, which is catastrophically ill-conditioned on coherent keys (see the op's docstring).
-# KEV_TORCH_CHUNK=0 serves the linear-attention chunk through fla's Triton op instead (the CUDA path).
+# XPU serving: Triton 3.4's Intel backend lowers tl.dot to scalar FMA on Xe-LPG+ (no DPAS in the emitted IR), so fla's
+# all-Triton chunk is 30-340x slower than oneDNN GEMMs at the dot; the chunk below runs the same algorithm on torch ops.
+# KEV_TORCH_CHUNK=0 keeps the chunk on fla's Triton op (the CUDA path).
 _XPU_TORCH_CHUNK = os.environ.get("KEV_TORCH_CHUNK", "1") == "1"
 
 
@@ -70,19 +67,15 @@ def _concat(*linears):
 
 def _chunk_gated_delta_rule_xpu(query, key, value, g, beta, chunk_size=64, initial_state=None, output_final_state=False):
     """The gated delta rule by chunking (transformers' torch_chunk_gated_delta_rule, Apache-2.0, models/qwen3_5/
-    modeling_qwen3_5.py) adapted for XPU serving: query/key/value [B, T, H, D] in bf16, g [B, T, H] the log-space
-    decay (<= 0), beta [B, T, H] in (0, 1). Returns (core_attn_out [B, T, H, Dv] in the input dtype, the new recurrent
-    state [B, H, Dk, Dv] in fp32 or None). Differences against the reference: the projections and the intra-chunk
-    GEMMs stay bf16 (oneDNN keeps fp32 accumulation) while the UT solve, the recurrent-state read/write and the
-    state itself stay fp32 — one fp32 [2C, Dk] GEMM per chunk reads S for both the output and the delta correction
-    (a merged fp32 read measures faster than a bf16 + fp32 pair, and the fused 2C GEMM is what the accuracy needs) —
-    torch.linalg.solve_triangular has no XPU path (it falls back to CPU, 78% of the reference's runtime), and the
-    system it solves cannot be inverted explicitly: on coherent keys (repeated text at deep layers of kev-0.8b,
-    |L| up to 0.9996 with row sums ~60 — measured) the explicit 64x64 inverse is catastrophically ill-conditioned
-    (Newton-Schulz gave x ~ 1e13 in bf16 and still ~1e9 in fp32, against the reference's 6.2), so the solve runs
-    as fp32 blocked forward substitution: each 16x16 diagonal block is inverted exactly by Newton-Schulz (entries
-    bounded ~1e4 however bad L is), and the blocks are substituted sequentially — forward substitution like the
-    reference's, never forming the big inverse."""
+    modeling_qwen3_5.py) adapted for XPU serving: query/key/value [B, T, H, D] in bf16, g the log-space decay (<= 0),
+    beta in (0, 1). Returns (core_attn_out in the input dtype, the recurrent state [B, H, Dk, Dv] in fp32 or None).
+    bf16 GEMMs (oneDNN keeps fp32 accumulation) where accuracy allows; the UT solve, the state read/write and the
+    state stay fp32 — one fp32 [2C, Dk] GEMM reads S for both the output and the delta correction. The two
+    torch.linalg.solve_triangular calls (78% of the reference's runtime; XPU falls back to CPU) become an exact fp32
+    blocked forward substitution, because the explicit 64x64 inverse is catastrophically ill-conditioned on coherent
+    keys (measured on kev-0.8b: |L| up to 0.9996, row sums ~60; Newton-Schulz returned x ~ 1e13 in bf16 and ~1e9 even
+    in fp32 vs the reference's 6.2): each 16x16 diagonal block is inverted exactly by Newton-Schulz (entries bounded
+    ~1e4 however bad L is), and the blocks are substituted sequentially — never forming the big inverse."""
     out_dtype = query.dtype
     B, T, _, Dk = key.shape
     Hv, Dv = value.shape[-2:]

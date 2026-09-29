@@ -1,18 +1,14 @@
 """XPU Triton environment setup for Windows + oneAPI (auto-detected toolchain).
 
-Import this module (or call setup()) BEFORE any triton/fla code runs so that:
-- ONEAPI_ROOT / LEVEL_ZERO_V1_SDK_PATH point at the real installs (triton's find_sycl)
-- CC/CXX are the oneAPI clang-cl
-- INCLUDE/LIB carry the MSVC + Windows SDK paths triton doesn't add itself
-- sycl8.dll is on the DLL path and pre-loaded (CRITICAL: otherwise the SYCL runtime
-  initializes host-only and the launcher fails with WinError 127)
+Import this module (or call setup()) BEFORE any triton/fla code runs so that ONEAPI_ROOT /
+LEVEL_ZERO_V1_SDK_PATH point at the real installs, CC/CXX are the oneAPI clang-cl, INCLUDE/LIB
+carry the MSVC + Windows SDK paths triton doesn't add itself, and sycl8.dll is on the DLL path
+and pre-loaded (otherwise the SYCL runtime initializes host-only and Triton fails with WinError 127).
 
-Every path is probed (newest installed version), so the module works on machines
-other than the one it was developed on; set ONEAPI_ROOT, LEVEL_ZERO_V1_SDK_PATH,
-CC, CXX, INCLUDE or LIB yourself to override a probe. Requires the Intel triton
-wheel (pytorch-triton-xpu): its drivers already load sycl8 + use winmode=0 and its
-build.py already splits MSVC flags, so no site-packages patch is needed. report()
-prints the probe results; kev.serve shows it at startup.
+Every path is probed (newest installed version); set ONEAPI_ROOT, LEVEL_ZERO_V1_SDK_PATH, CC, CXX,
+INCLUDE or LIB yourself to override a probe. Requires the Intel wheel (pytorch-triton-xpu), whose
+drivers already load sycl8 + use winmode=0 and whose build.py splits MSVC flags — no site-packages
+patch. report() prints the probe results; kev.serve shows them at startup.
 """
 import ctypes, os, pathlib, subprocess
 

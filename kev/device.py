@@ -1,11 +1,11 @@
-"""The accelerator this process uses: cuda, then xpu, then mps, then cpu."""
+"""The accelerator this process uses: cuda, then mps, then cpu. XPU is opt-in (serve picks it on
+Windows when one is present, kev.benchmark/experiment/train take it via --device xpu): training and
+the library tests have only been exercised on the upstream devices."""
 import torch
 
 
 def default_device():
-    return "cuda" if torch.cuda.is_available() else \
-        "xpu" if getattr(torch, "xpu", None) and torch.xpu.is_available() else \
-        "mps" if torch.backends.mps.is_available() else "cpu"
+    return "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
 
 def sync(device):

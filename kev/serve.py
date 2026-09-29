@@ -339,6 +339,9 @@ def main():
     run = a.run if is_hub_id(a.run) or os.path.exists(f"{a.run}/head.pt") else a.fallback
     if run != a.run: print(f"{a.run} not found, falling back to {run}")
     dev = default_device()
+    if dev == "cpu" and sys.platform == "win32" and not TORCH_DELTA \
+            and os.environ.get("KEV_XPU_TRITON", "1") != "0" and getattr(torch, "xpu", None) and torch.xpu.is_available():
+        dev = "xpu"   # Windows XPU serving is this branch's target (docs/XPU-SERVING.md); --device overrides
     opts = LoadOptions.from_env()
     if dev == "mps" and opts.attn is None: opts = replace(opts, attn="sdpa")   # serving default on Apple GPUs (parity measured)
     if dev != "cpu" and opts.dtype is None: opts = replace(opts, dtype=torch.bfloat16)   # serving default: 2-4.5x faster than fp32 on an L4, same answers (LoadOptions.dtype); KEV_DTYPE=fp32 for the exact path

@@ -18,6 +18,7 @@ where the reference rounds to bf16 in between), so fused and reference answers a
 Only for serving: there is no backward, the fused projections replace the originals (the merged LoRA is inside), and a
 pass that continues a cached DeltaNet state does not advance it (see deltanet_forward).
 """
+import sys
 import types
 
 import torch
@@ -207,6 +208,9 @@ def fuse(lm):
     against the reference: no backward, and a pass that continues a cached DeltaNet state leaves that state as it was
     (Kev's question rows never continue from each other). Needs flash-linear-attention FLA_VERSION exactly: it patches
     fla's kernel launches (_fix_nb)."""
+    if sys.platform == "win32":
+        from . import xpu_triton_env  # noqa: F401 — Windows: load the oneAPI sycl8 + toolchain before Triton's first JIT;
+        # the intel-sycl-rt wheel's sycl8.dll lacks symbols the compiled launcher imports (Entry-Point dialog)
     import fla
     if fla.__version__ != FLA_VERSION:
         raise RuntimeError(f"kev's fused kernels need flash-linear-attention=={FLA_VERSION}, found {fla.__version__}; "

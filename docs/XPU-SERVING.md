@@ -2,7 +2,7 @@
 
 This branch adds Intel XPU support to kev:
 
-- `--device xpu` everywhere (`default_device()` auto-detects it).
+- `--device xpu` everywhere; kev.serve picks XPU by default on Windows when one is present (opt-in elsewhere).
 - **SDPA on XPU by default** (eager is ~2x slower on the same request).
 - **Hybrid XPU serving on Windows**: kev's fused layers with the DeltaNet chunk on torch
   ops instead of flash-linear-attention's all-Triton chunk, because Triton 3.4's Intel
@@ -79,6 +79,14 @@ xpu_triton_env: oneapi: ... | clang-cl: ... | sycl8: preloaded | msvc: ... | win
   imports and tests are never affected.
 - Linux + XPU and macOS are out of scope for this branch (the Windows-only path is tested).
 - CUDA graph capture stays CUDA-only (`torch.xpu` has no capture API).
+
+- **sycl8.dll and the Entry-Point dialog.** The `intel-sycl-rt` wheel (2025.1) pip installs under
+  `Library\bin` lacks symbols the JIT-built `__triton_launcher.pyd` imports (e.g.
+  `sycl::handler::setNDRangeDescriptor`); a process that lets Triton load it shows a modal Entry-Point
+  dialog and hangs. `kev.xpu_triton_env` preloads the oneAPI toolkit sycl8.dll first — `python -m kev.serve`
+  and `fuse()` do this — so kev processes never load the wheel's copy. `default_device()` therefore stays
+  cuda→mps→cpu: XPU is opt-in (serve picks it on Windows, the CLIs take `--device xpu`), keeping library
+  tests and training on CPU as upstream.
 
 ## Benchmarks
 

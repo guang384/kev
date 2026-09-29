@@ -107,11 +107,26 @@ def _winsdk():
 
 
 def setup():
-    """Probe the toolchain and prepare the environment. Call before importing triton/fla."""
+    """Probe the toolchain and prepare the environment. Call before importing torch/triton/fla:
+    the preload can only claim the sycl8.dll module name before torch loads its wheel copy, and a
+    process that missed that window must instead keep the wheel's sycl8 end to end (its launchers
+    then build against the wheel's import library and match at load time)."""
     global _setup_done
     if _setup_done:
         return
     _setup_done = True
+    late = False
+    if os.name == "nt":
+        ctypes.windll.kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+        ctypes.windll.kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+        late = bool(ctypes.windll.kernel32.GetModuleHandleW("sycl8.dll"))   # torch already claimed it
+    if late:
+        _log("sycl8", "already loaded by torch; skipping the oneAPI preload (call setup() before importing torch)")
+        return
+    # A preloaded process compiles/links against the oneAPI sycl8, so its triton cache must not be
+    # shared with cold processes (which resolve the wheel's sycl8): a launcher built in one fails
+    # to load in the other (0xc0000139, a modal Entry-Point dialog). Set your own to override.
+    os.environ.setdefault("TRITON_CACHE_DIR", os.path.join(os.path.expanduser("~"), ".triton", "cache-xpu-oneapi"))
     base, clang, dll = _oneapi()
     if base is not None:
         os.environ.setdefault("ONEAPI_ROOT", str(base))

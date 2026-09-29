@@ -349,7 +349,7 @@ def main():
     ck = Checkpoint(run)
     tok, model = ck.load(dev, opts)
     if fused_default and not opts.fused and model.hybrid: print("fused Qwen3.5 kernels off: install the flash-linear-attention version kev/fused_qwen35.py pins (FLA_VERSION) to turn them on")
-    if sys.platform == "win32" and not TORCH_DELTA and os.environ.get("KEV_XPU_TRITON", "1") != "0":
+    if dev == "xpu" and not TORCH_DELTA and os.environ.get("KEV_XPU_TRITON", "1") != "0":
         try:
             from . import xpu_triton_env
             print("xpu_triton_env:", xpu_triton_env.report().replace("\n", " | "))

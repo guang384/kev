@@ -29,8 +29,10 @@ TORCH_DELTA = __name__ == "__main__" and os.environ.get("KEV_TORCH_DELTA", "0") 
 if TORCH_DELTA:
     sys.modules["fla"] = None
 elif __name__ == "__main__" and sys.platform == "win32" and os.environ.get("KEV_XPU_TRITON", "1") != "0":
-    try: from . import xpu_triton_env  # noqa: F401 — preload sycl8.dll + patch Triton before torch triggers it
-    except Exception: pass
+    try:
+        from . import xpu_triton_env  # noqa: F401 — preload sycl8.dll + patch Triton before torch triggers it
+    except Exception as e:   # a broken toolchain must fail loudly, not as an obscure WinError 127 later
+        print(f"kev.xpu_triton_env failed to set up: {e!r}", file=sys.stderr)
 import torch
 from dataclasses import dataclass, field, replace
 from fastapi import FastAPI, HTTPException
@@ -350,6 +352,12 @@ def main():
     ck = Checkpoint(run)
     tok, model = ck.load(dev, opts)
     if fused_default and not opts.fused and model.hybrid: print("fused Qwen3.5 kernels off: install the flash-linear-attention version kev/fused_qwen35.py pins (FLA_VERSION) to turn them on")
+    if sys.platform == "win32" and not TORCH_DELTA and os.environ.get("KEV_XPU_TRITON", "1") != "0":
+        try:
+            from . import xpu_triton_env
+            print("xpu_triton_env:", xpu_triton_env.report().replace("\n", " | "))
+        except Exception as e:
+            print(f"xpu_triton_env unavailable: {e!r}", file=sys.stderr)
     app.state.server = Server(ck, tok, model, dev)
     print(f"serving {ck.requested} ({ck.path}) on {dev} via {model.backend} ({model.dtype}){' [torch-delta]' if TORCH_DELTA else ''} {a.host}:{a.port}; states over {SERVE_MAX_STATE:,} tokens "
           f"{'truncated (KEV_TRUNCATE_STATES=1)' if app.state.server.truncate_states else 'refused (422)'}")   # /v1/models reports the run as given, not the resolved cache path

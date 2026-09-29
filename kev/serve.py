@@ -356,6 +356,9 @@ def main():
     opts = LoadOptions.from_env()
     if opts.backend is None: opts = replace(opts, backend="auto")   # serving default: MLX for the hybrid Qwen3.5 checkpoints on Apple Silicon (LoadOptions.backend); KEV_BACKEND=torch to decline
     dev, ck = _serving_device(a.device, opts, run)
+    if dev == "cpu" and a.device == "auto" and sys.platform == "win32" and not TORCH_DELTA \
+            and os.environ.get("KEV_XPU_TRITON", "1") != "0" and getattr(torch, "xpu", None) and torch.xpu.is_available():
+        dev = select("xpu", dtype=opts.dtype or torch.bfloat16)   # Windows XPU serving is this branch's target (docs/XPU-SERVING.md); an explicit --device wins
     if dev == "mps" and opts.attn is None: opts = replace(opts, attn="sdpa")   # serving default on Apple GPUs (parity measured)
     if dev != "cpu" and opts.dtype is None: opts = replace(opts, dtype=torch.bfloat16)   # serving default: 2-4.5x faster than fp32 on an L4, same answers (LoadOptions.dtype); KEV_DTYPE=fp32 for the exact path
     cuda_optimizations = dev == "cuda" and torch.version.hip is None   # these serving paths are measured on NVIDIA

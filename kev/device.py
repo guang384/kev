@@ -1,4 +1,6 @@
-"""The accelerator this process uses: cuda, then xpu, then mps, then cpu."""
+"""The accelerator this process uses: cuda, then mps, then cpu. XPU is opt-in (serve picks it on
+Windows when one is present, kev.benchmark/experiment/train take it via --device xpu): training and
+the library tests have only been exercised on the upstream devices."""
 import math
 import os
 import subprocess
@@ -18,9 +20,9 @@ DEVICES = ("cpu", "cuda", "xpu", "mps")
 # The child prints one line with this prefix. ROCm and other wheels write startup text to stdout around it;
 # a bare "cuda" line in that text is not a result.
 PROBE_PREFIX = "kev-device "
-DEVICE_HELP = ("auto probes in a child process and falls back to cpu (CUDA/ROCm first, then Intel XPU, then MPS; "
+DEVICE_HELP = ("auto probes in a child process and falls back to cpu (CUDA/ROCm first, then MPS; "
                "each probe waits KEV_DEVICE_PROBE_TIMEOUT seconds, default 30); "
-               "an explicit accelerator fails closed; cpu skips discovery")
+               "an explicit accelerator fails closed (xpu is opt-in); cpu skips discovery")
 
 
 def default_device():
@@ -86,9 +88,7 @@ def _run_probe(device, dtype, timeout):
 def _probe(device, dtype):
     """Child-process entry point: no accelerator operations from here may run in the selecting process."""
     if device == "auto":
-        device = ("cuda" if torch.cuda.is_available() else
-                  "xpu" if getattr(torch, "xpu", None) and torch.xpu.is_available() else
-                  "mps" if torch.backends.mps.is_available() else "cpu")
+        device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     if device != "cpu":
         with torch.no_grad():
             matrix = torch.ones(8, 8, device=device, dtype=dtype)

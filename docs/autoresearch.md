@@ -235,4 +235,3 @@ At the end of the session (and in the state file as it goes):
 - **Soft-target data.** When writing a builder, check a handful of records by eye: `target` sums to 1 and the label's mass is
   at least 0.5 unless the record is unknowable (`kev.data.none_pair` once trained zero mass on soft targets, fixed in #60).
 - Redirect `modal run ...::study` output to a log file; a filter can hide the `SystemExit` that explains why nothing launched.
-

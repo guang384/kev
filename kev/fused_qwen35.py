@@ -100,26 +100,19 @@ def _chunk_gated_delta_rule_xpu(query, key, value, g, beta, chunk_size=64, initi
     rhs = torch.cat([v_beta.float(), (k_beta * cum_decay.exp().unsqueeze(-1).to(out_dtype)).float()], -1)
     sub = 16 if chunk_size % 16 == 0 else chunk_size                    # the block the small NS inverts exactly
     NB = chunk_size // sub
-    if NB == 1:
-        Lb = ut.tril(-1).reshape(-1, chunk_size, chunk_size)
-        X = torch.eye(chunk_size, dtype=torch.float32, device=Lb.device).expand(Lb.shape).contiguous() - Lb
-        for _ in range(max(0, (chunk_size - 1).bit_length() - 1)):
-            X = 2.0 * X - X @ (X + Lb @ X)
-        sol = (X @ rhs.reshape(-1, chunk_size, rhs.shape[-1])).reshape(rhs.shape)
-    else:
-        blocks = ut.reshape(B, Hv, NC, NB, sub, NB, sub)                 # [.., i, :, j, :] is block (i, j)
-        Ld = torch.stack([blocks[:, :, :, i, :, i, :] for i in range(NB)], 3).tril(-1).reshape(-1, sub, sub)
-        Xd = torch.eye(sub, dtype=torch.float32, device=Ld.device).expand(Ld.shape).contiguous() - Ld
-        for _ in range(max(0, (sub - 1).bit_length() - 1)):              # exact: the error is L^(2^(k+1))
-            Xd = 2.0 * Xd - Xd @ (Xd + Ld @ Xd)
-        Xd = Xd.reshape(B, Hv, NC, NB, sub, sub)
-        r, x = rhs.reshape(B, Hv, NC, NB, sub, -1), torch.empty_like(rhs).reshape(B, Hv, NC, NB, sub, -1)
-        for i in range(NB):                                              # x_i = Xd_i (r_i - sum_j L_ij x_j)
-            acc = r[:, :, :, i]
-            for j in range(i):
-                acc = acc - blocks[:, :, :, i, :, j, :] @ x[:, :, :, j]
-            x[:, :, :, i] = Xd[:, :, :, i] @ acc
-        sol = x.reshape(rhs.shape)
+    blocks = ut.reshape(B, Hv, NC, NB, sub, NB, sub)                     # [.., i, :, j, :] is block (i, j)
+    Ld = torch.stack([blocks[:, :, :, i, :, i, :] for i in range(NB)], 3).tril(-1).reshape(-1, sub, sub)
+    Xd = torch.eye(sub, dtype=torch.float32, device=Ld.device).expand(Ld.shape).contiguous() - Ld
+    for _ in range(max(0, (sub - 1).bit_length() - 1)):              # exact: the error is L^(2^(k+1))
+        Xd = 2.0 * Xd - Xd @ (Xd + Ld @ Xd)
+    Xd = Xd.reshape(B, Hv, NC, NB, sub, sub)
+    r, x = rhs.reshape(B, Hv, NC, NB, sub, -1), torch.empty_like(rhs).reshape(B, Hv, NC, NB, sub, -1)
+    for i in range(NB):                                              # x_i = Xd_i (r_i - sum_j L_ij x_j)
+        acc = r[:, :, :, i]
+        for j in range(i):
+            acc = acc - blocks[:, :, :, i, :, j, :] @ x[:, :, :, j]
+        x[:, :, :, i] = Xd[:, :, :, i] @ acc
+    sol = x.reshape(rhs.shape)
     new_values = sol[..., :Dv]                                           # fp32: the delta correction's target
     k_cumdecay = sol[..., Dv:]                                          # fp32: the old-state read of the write side
     S = torch.zeros(B, Hv, Dk, Dv, dtype=torch.float32, device=q.device) if initial_state is None \

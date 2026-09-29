@@ -62,7 +62,6 @@ xpu_triton_env: oneapi: ... | clang-cl: ... | sycl8: preloaded | msvc: ... | win
 | Env var | Default | Meaning |
 |---|---|---|
 | `KEV_TORCH_DELTA` | `0` | `1` = serve the pure torch reference (fla blocked; simplest, most portable, slowest on XPU) |
-| `KEV_TORCH_CHUNK` | `1` | `0` = put the DeltaNet chunk back on fla's Triton op (research only; slower on Arc) |
 | `KEV_XPU_TRITON` | `1` | `0` = skip `xpu_triton_env` setup entirely |
 | `KEV_FUSED` | auto | `0` / `1` = force fused layers off/on |
 | `KEV_PREFIX_CACHE` | `4` | state-prefix entries kept across requests (0 disables) |

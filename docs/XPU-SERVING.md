@@ -100,4 +100,3 @@ python -m kev.serve --run /path/to/kev-0.8b --device xpu --port 8009            
 KEV_TORCH_DELTA=1 python -m kev.serve --run /path/to/kev-0.8b --device xpu --port 8009    # reference
 ```
 
-> AI生成

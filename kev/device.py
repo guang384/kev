@@ -3,13 +3,9 @@ import torch
 
 
 def default_device():
-    if torch.cuda.is_available():
-        return "cuda"
-    if getattr(torch, "xpu", None) and torch.xpu.is_available():
-        return "xpu"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+    return "cuda" if torch.cuda.is_available() else \
+        "xpu" if getattr(torch, "xpu", None) and torch.xpu.is_available() else \
+        "mps" if torch.backends.mps.is_available() else "cpu"
 
 
 def sync(device):
@@ -32,7 +28,7 @@ def out_of_memory(e):
 
 
 def allocated_bytes(device):
-    """Bytes currently allocated on the device (MPS) or the peak since the process started (CUDA/XPU); 0 on CPU."""
+    """Bytes currently allocated on the device (MPS/XPU) or the peak since the process started (CUDA); 0 on CPU."""
     if device == "mps": return torch.mps.current_allocated_memory()
     if device == "cuda": return torch.cuda.max_memory_allocated()
     if device == "xpu": return torch.xpu.memory_allocated()

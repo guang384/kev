@@ -49,7 +49,8 @@ def _oneapi():
     comp = base / "compiler"
     dll = comp / "latest" / "bin"
     if not (dll / "sycl8.dll").is_file():                       # older layouts
-        dll = _newest(comp) and _newest(comp) / "bin" or None
+        newest = _newest(comp)
+        dll = newest / "bin" if newest else None
     clang = None
     for cand in (dll / "compiler" / "clang-cl.exe", dll / "clang-cl.exe") if dll else ():
         if cand.is_file():

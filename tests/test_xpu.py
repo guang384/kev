@@ -77,6 +77,18 @@ def test_matches_reference(device, T):
 
 
 @pytest.mark.parametrize("device", DEVICES)
+def test_small_chunk_matches_reference(device):
+    """chunk_size=16 takes the single-block path (NB == 1) and pads T=130 to 144; same parity bound."""
+    q, k, v, g, beta = _inputs(device, 130, seed=3)
+    ref_out, ref = torch_chunk_gated_delta_rule(q.float(), k.float(), v.float(), g, beta,
+                                               chunk_size=16, output_final_state=True,
+                                               use_qk_l2norm_in_kernel=True)
+    out, S = _chunk_gated_delta_rule_xpu(q, k, v, g, beta, chunk_size=16, output_final_state=True)
+    assert torch.isfinite(out).all() and torch.isfinite(S).all()
+    assert _relerr(out, ref_out) < 5e-2 and _relerr(S, ref) < 5e-2
+
+
+@pytest.mark.parametrize("device", DEVICES)
 def test_state_continuation_matches_single_pass(device):
     """A state filled by pass 1 and read by pass 2 equals one pass over the concatenation."""
     T1, T2, T = 65, 127, 192

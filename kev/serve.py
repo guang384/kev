@@ -364,7 +364,7 @@ def main():
     if fused_default: opts = replace(opts, fused=fused_available())   # serving default: fused Qwen3.5 kernels, ~1/3 less GPU time per batch (kev.fused_qwen35), when fla is installed; KEV_FUSED=0 to decline, KEV_FUSED=1 to insist
     tok, model = ck.load(dev, opts)
     if fused_default and not opts.fused and model.hybrid: print("fused Qwen3.5 kernels off: install the flash-linear-attention version kev/fused_qwen35.py pins (FLA_VERSION) to turn them on")
-    if sys.platform == "win32" and not TORCH_DELTA and os.environ.get("KEV_XPU_TRITON", "1") != "0":
+    if dev == "xpu" and not TORCH_DELTA and os.environ.get("KEV_XPU_TRITON", "1") != "0":
         try:
             from . import xpu_triton_env
             print("xpu_triton_env:", xpu_triton_env.report().replace("\n", " | "))

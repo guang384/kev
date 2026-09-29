@@ -33,9 +33,12 @@ probe, set the variable yourself before importing: `ONEAPI_ROOT`,
 # in your venv
 pip install -e ".[test]"
 pip install "flash-linear-attention==0.5.2"
+# XPU wheels (Windows): torch from the XPU index pulls the matching Intel Triton (pytorch-triton-xpu)
+pip install torch --index-url https://download.pytorch.org/whl/xpu
 # or with uv:
 uv sync --extra test
 uv pip install "flash-linear-attention==0.5.2"
+uv pip install torch --index-url https://download.pytorch.org/whl/xpu
 ```
 
 `flash-linear-attention==0.5.2` is pinned by `kev.fused_qwen35` (any other version raises
@@ -79,14 +82,22 @@ xpu_triton_env: oneapi: ... | clang-cl: ... | sycl8: preloaded | msvc: ... | win
 
 ## Benchmarks
 
-`python scripts/serving_bench.py --device xpu` (or `kev.serve` + the API). kev-0.8B on an
-Arc 130T, median model time, new state / cached-state hit:
+Served model time per request — the `latency_ms` every kev.serve call reports — median over 5
+repeats, a new state per request / a repeated state (prefix-cache hit). kev-0.8B on an Arc 130T:
 
-| request shape | pure torch reference | hybrid (default) |
+| request shape | pure torch reference (`KEV_TORCH_DELTA=1`) | hybrid (default) |
 |---|---|---|
 | 89 tokens, 2 questions | 470 / 230 ms | 245 / 133 ms |
 | 253 tokens, 6 questions | 1059 / 792 ms | 465 / 349 ms |
 | 567 tokens, 5 questions | 1147 / 634 ms | 524 / 304 ms |
 | 2392 tokens, 5 questions | 3654 / 685 ms | 1720 / 334 ms |
+
+To reproduce, serve each configuration and send a state followed by repeats of the same state
+(the repeats exercise the prefix cache and report the cached latency):
+
+```bash
+python -m kev.serve --run /path/to/kev-0.8b --device xpu --port 8009                       # hybrid
+KEV_TORCH_DELTA=1 python -m kev.serve --run /path/to/kev-0.8b --device xpu --port 8009    # reference
+```
 
 > AI生成

@@ -80,13 +80,16 @@ xpu_triton_env: oneapi: ... | clang-cl: ... | sycl8: preloaded | msvc: ... | win
 - Linux + XPU and macOS are out of scope for this branch (the Windows-only path is tested).
 - CUDA graph capture stays CUDA-only (`torch.xpu` has no capture API).
 
-- **sycl8.dll and the Entry-Point dialog.** The `intel-sycl-rt` wheel (2025.1) pip installs under
-  `Library\bin` lacks symbols the JIT-built `__triton_launcher.pyd` imports (e.g.
-  `sycl::handler::setNDRangeDescriptor`); a process that lets Triton load it shows a modal Entry-Point
-  dialog and hangs. `kev.xpu_triton_env` preloads the oneAPI toolkit sycl8.dll first — `python -m kev.serve`
-  and `fuse()` do this — so kev processes never load the wheel's copy. `default_device()` therefore stays
-  cuda→mps→cpu: XPU is opt-in (serve picks it on Windows, the CLIs take `--device xpu`), keeping library
-  tests and training on CPU as upstream.
+- **sycl8.dll and the Entry-Point dialog.** `import torch` loads the `intel-sycl-rt` wheel's sycl8.dll (2025.1, under `Library\bin`),
+  which lacks symbols the oneAPI-linked `__triton_launcher.pyd` imports (e.g.
+  `sycl::handler::setNDRangeDescriptor`); the first Triton XPU JIT in such a process dies with
+  0xc0000139 and Windows shows a modal Entry-Point dialog that hangs it. `kev.xpu_triton_env` preloads
+  the oneAPI toolkit sycl8.dll *before torch* — `python -m kev.serve` and `tests/conftest.py` do this,
+  and any script of yours must too — and keeps preloaded processes' triton cache under
+  `~/.triton/cache-xpu-oneapi` so their launchers never leak into cold ones. Calling `setup()` too
+  late (torch already imported) is detected and skipped, leaving that process on the wheel's sycl8 end
+  to end. `default_device()` therefore stays cuda→mps→cpu: XPU is opt-in (serve picks it on Windows,
+  the CLIs take `--device xpu`), keeping library tests and training on CPU as upstream.
 
 ## Benchmarks
 

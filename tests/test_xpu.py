@@ -16,6 +16,12 @@ import torch
 # resolution); the pure-torch reference we must match is only reached when fla is absent. Block fla for
 # this import, exactly as kev.serve's KEV_TORCH_DELTA=1 does, then restore it so kev.fused_qwen35
 # (which imports fla's elementwise kernels) loads normally.
+#
+# The hub decorator binds the choice once, at modeling_qwen3_5's first import, so the block works only
+# if this module is that first import: kev.model defers modeling (AutoModel loads it at from_pretrained
+# time, not at kev.model import), and no alphabetically earlier test file imports it at module scope —
+# only inside functions. Keep that true, or the reference binds to fla's kernel instead (whose autotune
+# JITs XPU Triton even on CPU tensors).
 for _name in tuple(sys.modules):
     if _name == "fla" or _name.startswith("fla."):
         del sys.modules[_name]

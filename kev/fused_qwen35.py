@@ -55,6 +55,18 @@ FLA_VERSION = "0.5.2"   # the flash-linear-attention these kernels and _fix_nb w
 # XPU serving: Triton 3.4's Intel backend lowers tl.dot to scalar FMA on Xe-LPG+ (no DPAS in the emitted IR), so fla's
 # all-Triton chunk is 30-340x slower than oneDNN GEMMs at the dot; the chunk below runs the same algorithm on torch ops.
 
+_MASK_CACHE = {}   # (chunk_size, device) -> the pairwise-decay upper-triangle mask, rebuilt only per new key
+
+
+def _pairwise_mask(chunk_size, device):
+    """The causal mask (strictly upper triangle) for the pairwise decay matrix, cached per (chunk, device)."""
+    key = (chunk_size, device)
+    mask = _MASK_CACHE.get(key)
+    if mask is None:
+        mask = torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=device).triu(1)
+        _MASK_CACHE[key] = mask
+    return mask
+
 
 def _concat(*linears):
     """One weight [sum(out), in] for several bias-free projections of the same input."""
@@ -91,8 +103,7 @@ def _chunk_gated_delta_rule_xpu(query, key, value, g, beta, chunk_size=64, initi
     v_beta = v * beta.unsqueeze(-1).to(out_dtype)                       # [B, H, NC, C, Dv], bf16 like the big GEMMs
     k_beta = k * beta.unsqueeze(-1).to(out_dtype)
     cum_decay = decay.cumsum(-1)                                         # fp32, still in log space
-    pairwise = (cum_decay.unsqueeze(-1) - cum_decay.unsqueeze(-2)).masked_fill(
-        torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=q.device).triu(1), float("-inf")).exp()
+    pairwise = (cum_decay.unsqueeze(-1) - cum_decay.unsqueeze(-2)).masked_fill(_pairwise_mask(chunk_size, q.device), float("-inf")).exp()
     ut = (k_beta @ k.transpose(-1, -2)).float() * pairwise              # bf16 GEMM, fp32 decay math
     intra = (q @ k.transpose(-1, -2)).float() * pairwise
     # Exact fp32 solve of the unitriangular system (I + tril(ut, -1)) x = rhs for both right-hand sides at

@@ -91,7 +91,7 @@ def _chunk_gated_delta_rule_xpu(query, key, value, g, beta, chunk_size=64, initi
     q, k, v = (x.transpose(1, 2) for x in (query, key, value))          # [B, H, T, D]
     decay, beta = g.transpose(1, 2).float(), beta.transpose(1, 2).float()
     qf, kf = q.float(), k.float()                                        # l2-norm in fp32, matching fla's in-kernel norm
-    q = (qf * torch.rsqrt(qf.pow(2).sum(-1, keepdim=True) + 1e-6) * (Dk ** -0.5)).to(out_dtype)
+    q = (qf * (torch.rsqrt(qf.pow(2).sum(-1, keepdim=True) + 1e-6) * (Dk ** -0.5))).to(out_dtype)
     k = (kf * torch.rsqrt(kf.pow(2).sum(-1, keepdim=True) + 1e-6)).to(out_dtype)
     pad = (chunk_size - T % chunk_size) % chunk_size
     if pad:
@@ -104,7 +104,8 @@ def _chunk_gated_delta_rule_xpu(query, key, value, g, beta, chunk_size=64, initi
     k_beta = k * beta_b
     cum_decay = decay.cumsum(-1)                                         # fp32, still in log space
     cum_exp = cum_decay.exp()                                            # fp32 decay weights, shared by three readers below
-    pairwise = (cum_decay.unsqueeze(-1) - cum_decay.unsqueeze(-2)).masked_fill(_pairwise_mask(chunk_size, q.device), float("-inf")).exp()
+    pairwise = (cum_decay.unsqueeze(-1) - cum_decay.unsqueeze(-2)).masked_fill_(
+        _pairwise_mask(chunk_size, q.device), float("-inf")).exp_()   # chained in place: no intermediate materializations
     qk_prod = (torch.cat([q, k_beta], -2) @ k.transpose(-1, -2)).float()   # one [2C, Dk] bf16 GEMM covers both C x C products
     intra = qk_prod[..., :chunk_size, :] * pairwise                     # (q @ k^T) and ...
     ut = qk_prod[..., chunk_size:, :] * pairwise                        # ... (k_beta @ k^T), fp32 decay math
@@ -133,13 +134,14 @@ def _chunk_gated_delta_rule_xpu(query, key, value, g, beta, chunk_size=64, initi
     out = torch.empty(B, Hv, NC, chunk_size, Dv, dtype=torch.float32, device=q.device)   # fp32: the loop adds straight into it; core casts once
     qd = q.float() * cum_exp.unsqueeze(-1)                               # fp32 decayed queries (the read side)
     kdd = k.float() * (cum_decay[..., -1:] - cum_decay).exp().unsqueeze(-1)   # fp32 decayed keys: write the new one
-    intra_b = intra.to(out_dtype)
     chunk_decay = cum_exp[..., -1]
     qk = torch.cat([qd, k_cumdecay], -2)                                 # fp32: one GEMM reads S for both sides
     for i in range(NC):
         reads = qk[:, :, i] @ S                                          # [B, Hv, 2C, Dv] fp32
         v_new = new_values[:, :, i] - reads[:, :, chunk_size:]           # fp32: the delta correction
-        torch.add(reads[:, :, :chunk_size], intra_b[:, :, i] @ v_new.to(out_dtype), out=out[:, :, i])   # add lands in the out slice: no fp32 temp, no separate cast
+        # intra stays fp32: the [C, C] x [C, Dv] product is small (launch-bound, not FLOP-bound), and fp32 drops
+        # both the whole-tensor bf16 cast and the per-chunk v_new cast — and is more accurate
+        torch.add(reads[:, :, :chunk_size], intra[:, :, i] @ v_new, out=out[:, :, i])
         torch.addcmul(kdd[:, :, i].transpose(-1, -2) @ v_new, S, chunk_decay[:, :, i, None, None], out=S)   # S = S*c + write, one kernel
     core = out.reshape(B, Hv, NC * chunk_size, Dv)[:, :, :T].transpose(1, 2).to(out_dtype, memory_format=torch.contiguous_format)
     return core, (S if output_final_state else None)

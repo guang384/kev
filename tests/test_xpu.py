@@ -124,8 +124,9 @@ def test_no_nan_on_coherent_long_state(device):
 @pytest.mark.parametrize("device", DEVICES)
 def test_gqa_repeat_matches_reference(device):
     """The deltanet GQA branch (num_v_heads > num_k_heads: q/k are repeat_interleaved to Hv before the
-    chunk — the fused layers' XPU path) must match the reference on the same expanded heads. rep == 2 is
-    the real family's ratio; the expansion itself is device-independent, so CPU exercises it too."""
+    chunk — the fused layers' XPU path) must match the reference on the same expanded heads. The 4B
+    base (Qwen3.5-4B-Base) is 16:32 (rep=2); the 0.8B base is 1:1, so this covers the 4B's path.
+    The expansion itself is device-independent, so CPU exercises it too."""
     Hk, Hv, T = 2, 4, 21
     g1, g2, g3, g4, g5 = (torch.Generator().manual_seed(s) for s in (21, 22, 23, 24, 25))
     q = torch.randn(1, T, Hk, DK, generator=g1)

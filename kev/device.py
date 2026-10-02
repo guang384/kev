@@ -101,13 +101,17 @@ def sync(device):
     """Wait for queued kernels, so wall-clock timings around a forward pass are real."""
     if device == "mps": torch.mps.synchronize()
     elif device == "cuda": torch.cuda.synchronize()
-    elif device == "xpu": torch.xpu.synchronize()
+    elif device == "xpu":
+        if getattr(torch, "xpu", None) is None:
+            raise ValueError("--device xpu needs a torch build with XPU support (pip install torch --index-url https://download.pytorch.org/whl/xpu)")
+        torch.xpu.synchronize()
 
 
 def empty_cache(device):
     if device == "mps": torch.mps.empty_cache()
     elif device == "cuda": torch.cuda.empty_cache()
-    elif device == "xpu": torch.xpu.empty_cache()
+    elif device == "xpu" and getattr(torch, "xpu", None) is not None:
+        torch.xpu.empty_cache()
 
 
 def out_of_memory(e):
@@ -120,7 +124,7 @@ def allocated_bytes(device):
     """Bytes currently allocated on the device (MPS) or the peak since the process started (CUDA/XPU); 0 on CPU."""
     if device == "mps": return torch.mps.current_allocated_memory()
     if device == "cuda": return torch.cuda.max_memory_allocated()
-    if device == "xpu": return torch.xpu.memory_allocated()
+    if device == "xpu" and getattr(torch, "xpu", None) is not None: return torch.xpu.memory_allocated()
     return 0
 
 

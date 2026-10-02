@@ -20,8 +20,14 @@ def _log(kind, detail):
     _PAGE.append((kind, detail))
 
 
+def _ver_key(name):
+    """A sortable key for versioned directory names: dotted numeric components compare numerically
+    (2025.10 > 2025.2, 14.40 > 14.9), and non-numeric ones ('latest') sort after all real versions."""
+    return tuple((1, int(part)) if part.isdigit() else (2, part) for part in str(name).split("."))
+
+
 def _newest(parent):
-    """The newest directory under `parent`, or None."""
+    """The newest directory under `parent` (by numeric version, else name), or None."""
     p = pathlib.Path(parent)
     if not p.is_dir():
         return None
@@ -29,7 +35,7 @@ def _newest(parent):
         vers = [d for d in p.iterdir() if d.is_dir()]
     except OSError:
         return None
-    return sorted(vers)[-1] if vers else None
+    return max(vers, key=lambda d: _ver_key(d.name)) if vers else None
 
 
 def _oneapi():

@@ -11,6 +11,22 @@ This branch adds Intel XPU support to kev:
   **1.7-2.3x faster than the pure torch reference** on an Arc 130T (kev-0.8B, new and
   prefix-cached requests) with answers agreeing to bf16 noise (max |dp| ≈ 0.008).
 
+## Getting this branch
+
+```bash
+git clone --branch add-xpu-support https://github.com/guang384/kev.git
+cd kev
+git remote add upstream https://github.com/jaredpalmer/kev.git   # optional: pull upstream updates (fetch + rebase)
+```
+
+After the [Setup](#setup) below, check your toolchain in one command — every probe
+(oneAPI, clang-cl, sycl8, MSVC, Windows SDK, Level Zero) prints what it found, and a
+miss names the variable that overrides it:
+
+```bash
+python -m kev.xpu_triton_env
+```
+
 ## Prerequisites (Windows)
 
 | Component | Why | How to get |
@@ -69,6 +85,24 @@ xpu_triton_env: oneapi: ... | clang-cl: ... | sycl8: preloaded | msvc: ... | win
 | `KEV_FUSED` | auto | `0` / `1` = force fused layers off/on |
 | `KEV_PREFIX_CACHE` | `4` | state-prefix entries kept across requests (0 disables) |
 
+## Footprint in the upstream tree
+
+Everything ships as a new file or a guarded branch: on cuda/mps/cpu and on Linux/macOS
+the behaviour is the upstream path (the full test suite gives identical results on this
+branch and on main; the failures that exist on both are Windows-environment ones, in
+upstream files this branch never touches).
+
+| Where | Kind | What a reviewer sees |
+|---|---|---|
+| `kev/xpu_triton_env.py`, `tests/test_xpu.py`, `tests/conftest.py`, `docs/XPU-SERVING.md`, `.gitignore` (+`.temp/`) | new files | the toolchain setup, its tests (pure torch — CPU parity included), this doc, the scratch ignore |
+| `kev/fused_qwen35.py` | guarded branch | `_chunk_gated_delta_rule_xpu` + an `if q.device.type == "xpu"` branch in `deltanet_forward`; every other device takes the upstream call unchanged |
+| `kev/serve.py` | opt-in only | the sycl8 preload and the Windows-XPU default run only under `python -m kev.serve` on win32 with `KEV_XPU_TRITON != 0`; `--device` is a new optional flag; library imports and tests are never affected |
+| `kev/device.py`, `kev/checkpoint.py`, `kev/model.py`, `kev/benchmark.py`, `kev/experiment.py`, `kev/train.py` | additive | `"xpu"` joins the existing device lists and guards; nothing upstream-existing changes behaviour |
+| `kev/contrastive.py`, `kev/suite.py`, `kev/experiment.py`, `kev/train.py` | Windows fixes | `strftime("%-d")` → an f-string, `Path.as_posix`, optional `fcntl`/`resource`: identical output on POSIX, required for Windows to run at all |
+
+The chunk op copies `initial_state` on entry before its in-place update, so a caller's
+recurrent state (the serve prefix cache reuses them across passes) is never modified.
+
 ## Known issues / porting notes
 
 - **The Intel triton wheel is required.** `pytorch-triton-xpu` ships the Windows glue
@@ -111,3 +145,4 @@ python -m kev.serve --run /path/to/kev-0.8b --device xpu --port 8009            
 KEV_TORCH_DELTA=1 python -m kev.serve --run /path/to/kev-0.8b --device xpu --port 8009    # reference
 ```
 
+> AI生成

@@ -10,7 +10,7 @@ INCLUDE or LIB yourself to override a probe. Requires the Intel wheel (pytorch-t
 drivers already load sycl8 + use winmode=0 and whose build.py splits MSVC flags — no site-packages
 patch. report() prints the probe results; kev.serve shows them at startup.
 """
-import ctypes, os, pathlib, subprocess
+import ctypes, os, pathlib, subprocess, sys, sys
 
 _PAGE = []            # (kind, detail) — what was found, for report()
 _setup_done = False
@@ -174,3 +174,9 @@ def report():
 
 
 setup()
+
+
+if __name__ == "__main__":   # python -m kev.xpu_triton_env — a setup doctor: probe the toolchain, print the report, exit
+    if os.name != "nt":
+        print("kev.xpu_triton_env targets Windows + Intel XPU (oneAPI); on this platform it stays inert.", file=sys.stderr)
+    print(report() or "no probes ran; call setup() first")

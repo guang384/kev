@@ -121,6 +121,32 @@ def test_no_nan_on_coherent_long_state(device):
     assert _relerr(S, ref) < 1.0
 
 
+@pytest.mark.parametrize("device", DEVICES)
+def test_gqa_repeat_matches_reference(device):
+    """The deltanet GQA branch (num_v_heads > num_k_heads: q/k are repeat_interleaved to Hv before the
+    chunk — the fused layers' XPU path) must match the reference on the same expanded heads. rep == 2 is
+    the real family's ratio; the expansion itself is device-independent, so CPU exercises it too."""
+    Hk, Hv, T = 2, 4, 21
+    g1, g2, g3, g4, g5 = (torch.Generator().manual_seed(s) for s in (21, 22, 23, 24, 25))
+    q = torch.randn(1, T, Hk, DK, generator=g1)
+    k = torch.randn(1, T, Hk, DK, generator=g2)
+    v = torch.randn(1, T, Hv, DV, generator=g3)
+    decay = -torch.rand(1, T, Hv, generator=g4) * 0.05
+    beta = torch.rand(1, T, Hv, generator=g5)
+    to_d = lambda x, dt: x.to(device).to(dt)
+    q, k, v = to_d(q, torch.bfloat16), to_d(k, torch.bfloat16), to_d(v, torch.bfloat16)
+    decay, beta = to_d(decay, torch.float32), to_d(beta, torch.float32)
+    rep = Hv // Hk
+    q2, k2 = (x.repeat_interleave(rep, dim=2) for x in (q, k))   # deltanet_forward's GQA expansion
+    ref_out, ref = torch_chunk_gated_delta_rule(q2.float(), k2.float(), v.float(), decay, beta,
+                                                chunk_size=CHUNK, output_final_state=True,
+                                                use_qk_l2norm_in_kernel=True)
+    out, S = _chunk_gated_delta_rule_xpu(q2, k2, v, decay, beta, chunk_size=CHUNK, output_final_state=True)
+    assert out.shape == ref_out.shape and S.shape == ref.shape
+    assert torch.isfinite(out).all() and torch.isfinite(S).all()
+    assert _relerr(out, ref_out) < 5e-2 and _relerr(S, ref) < 5e-2
+
+
 def test_no_output_state_when_not_requested():
     args = _inputs("cpu", 70)
     _, S = _chunk_gated_delta_rule_xpu(*args, chunk_size=CHUNK, output_final_state=False)

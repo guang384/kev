@@ -135,6 +135,9 @@ def startup(monkeypatch):
         if name.startswith("KEV_"):
             monkeypatch.delenv(name)
     monkeypatch.setattr(torch.version, "hip", None)
+    if hasattr(torch, "xpu"):
+        # An XPU host must not change the upstream cases; the Windows default has its own test below.
+        monkeypatch.setattr(torch.xpu, "is_available", lambda: False)
     monkeypatch.setattr(serve, "fused_available", lambda: True)
     monkeypatch.setattr(sys, "argv", ["kev.serve", "--run", "fixture/model", "--port", "8019"])
     return loaded
@@ -178,6 +181,22 @@ def test_serve_probe_failure_precedes_weight_loading(startup, monkeypatch, reque
         with pytest.raises(RuntimeError, match="--device cpu"):
             serve.main()
         assert not startup
+
+
+def test_serve_windows_picks_xpu_when_auto_resolves_cpu(startup, monkeypatch):
+    if not hasattr(torch, "xpu"):
+        pytest.skip("torch without XPU")
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command[-2])
+        return SimpleNamespace(stdout=reported("cpu" if command[-2] == "auto" else "xpu"))
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(torch.xpu, "is_available", lambda: True)
+    serve.main()
+    assert calls == ["auto", "xpu"]
+    assert startup[0][0] == "xpu"
+    assert startup[0][1].dtype == torch.bfloat16 and startup[0][1].fused is True
 
 
 def test_serve_preserves_explicit_options_and_probes_that_dtype(startup, monkeypatch):

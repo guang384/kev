@@ -33,7 +33,9 @@ for _name in tuple(sys.modules):
 
 from kev.fused_qwen35 import _chunk_gated_delta_rule_xpu
 
-DEVICES = ["cpu"] + (["xpu"] if getattr(torch, "xpu", None) and torch.xpu.is_available() else [])
+DEVICE_CASES = ["cpu"]
+if getattr(torch, "xpu", None) and torch.xpu.is_available():
+    DEVICE_CASES.append("xpu")
 CHUNK = 64
 B, H, DK, DV = 1, 2, 32, 32   # DK 32 ~ real head dim (128), but fast; random 32-d keys are near-orthogonal like the real ones
 
@@ -71,7 +73,7 @@ def _relerr(a, b):
     return (a.float() - b.float()).abs().max() / b.float().abs().max().clamp_min(1e-6)
 
 
-@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("device", DEVICE_CASES)
 @pytest.mark.parametrize("T", [1, 63, 64, 65, 192])
 def test_matches_reference(device, T):
     """The solve is exact (blocked substitution); bf16 GEMM rounding (fp32 accumulation in oneDNN) is
@@ -82,7 +84,7 @@ def test_matches_reference(device, T):
     assert _relerr(out, ref_out) < 5e-2 and _relerr(S, ref) < 5e-2
 
 
-@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("device", DEVICE_CASES)
 def test_small_chunk_matches_reference(device):
     """chunk_size=16 takes the single-block path (NB == 1) and pads T=130 to 144; same parity bound."""
     q, k, v, g, beta = _inputs(device, 130, seed=3)
@@ -94,7 +96,7 @@ def test_small_chunk_matches_reference(device):
     assert _relerr(out, ref_out) < 5e-2 and _relerr(S, ref) < 5e-2
 
 
-@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("device", DEVICE_CASES)
 def test_state_continuation_matches_single_pass(device):
     """A state filled by pass 1 and read by pass 2 equals one pass over the concatenation."""
     T1, T2, T = 65, 127, 192
@@ -109,7 +111,7 @@ def test_state_continuation_matches_single_pass(device):
     assert _relerr(S2, S_full) < 5e-2 and _relerr(out2, ref_out[:, T1:]) < 5e-2
 
 
-@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("device", DEVICE_CASES)
 def test_no_nan_on_coherent_long_state(device):
     """Regression: the first solve (bf16 Newton-Schulz explicit inverse) returned x ~ 1e13 on coherent
     keys at depth (reference: 6.2), poisoning the recurrent state to NaN within a few chunks. The
@@ -121,7 +123,7 @@ def test_no_nan_on_coherent_long_state(device):
     assert _relerr(S, ref) < 1.0
 
 
-@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("device", DEVICE_CASES)
 def test_gqa_repeat_matches_reference(device):
     """The deltanet GQA branch (num_v_heads > num_k_heads: q/k are repeat_interleaved to Hv before the
     chunk — the fused layers' XPU path) must match the reference on the same expanded heads. The 4B
